@@ -87,7 +87,7 @@ class Linear(object):
     # Why? Because dfdw = d(w * x + b)dw = x
     # x => (D, N)
     # dout => (N, M)
-    reshaped_x = x.view(x.size()[0], -1)
+    reshaped_x = x.reshape(x.size()[0], -1)
     dw = reshaped_x.T.matmul(dout) # (D, M)
 
     # Why? Because dfdx = d(w * x + b)dx = w
@@ -401,6 +401,8 @@ class Dropout(object):
       # We drop a neuron with probability p (i.e. mask[i][j] == False / 0)
       mask = torch.randn(x.size()) >= p 
       mask = mask.to(x.device)
+      # IMPORTANT: Scale the mask during training
+      mask /= p
 
       out = x * mask
 
