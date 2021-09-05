@@ -17,6 +17,7 @@ from scipy.ndimage.filters import gaussian_filter1d
 SQUEEZENET_MEAN = torch.tensor([0.485, 0.456, 0.406], dtype=torch.float)
 SQUEEZENET_STD = torch.tensor([0.229, 0.224, 0.225], dtype=torch.float)
 
+
 ### Helper Functions
 '''
 Our pretrained model was trained on images that had been preprocessed by subtracting 
@@ -33,6 +34,7 @@ def preprocess(img, size=224):
   ])
   return transform(img)
 
+
 def deprocess(img, should_rescale=True):
   # should_rescale true for style transfer
   transform = T.Compose([
@@ -44,6 +46,7 @@ def deprocess(img, should_rescale=True):
   ])
   return transform(img)
 
+
 # def deprocess(img):
 #     transform = T.Compose([
 #         T.Lambda(lambda x: x[0]),
@@ -54,11 +57,13 @@ def deprocess(img, should_rescale=True):
 #     ])
 #     return transform(img)
 
+
 def rescale(x):
   low, high = x.min(), x.max()
   x_rescaled = (x - low) / (high - low)
   return x_rescaled
-  
+
+
 def blur_image(X, sigma=1):
   X_np = X.cpu().clone().numpy()
   X_np = gaussian_filter1d(X_np, sigma, axis=2)
@@ -75,6 +80,7 @@ def check_scipy():
     major_vnum = int(scipy.__version__.split('.')[0])
     
     assert vnum >= 16 or major_vnum >= 1, "You must install SciPy >= 0.16.0 to complete this notebook."
+
 
 def jitter(X, ox, oy):
   """
@@ -203,12 +209,3 @@ def dump_results(submission, path):
   # del submission['attn_model']
   with open(path, "wb") as f:
     pickle.dump(submission, f)
-
-
-
-
-
-
-
-
-

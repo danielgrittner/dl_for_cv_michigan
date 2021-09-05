@@ -1044,6 +1044,7 @@ def kaiming_initializer(Din, Dout, K=None, relu=True, device='cpu',
 
     num_in_channels = Din
     fan_in = num_in_channels * K * K
+
     weight_scale = torch.sqrt(torch.tensor(gain / fan_in))
     weight = weight_scale * torch.randn((Dout, Din, K, K), device=device, dtype=dtype)
 

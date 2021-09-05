@@ -94,7 +94,7 @@ def decode_captions(captions, idx_to_word):
 
 def attention_visualizer(img, attn_weights, token):
   """
-  Visuailze the attended regions on a single frame from a single query word.
+  Visualize the attended regions on a single frame from a single query word.
   Inputs:
   - img: Image tensor input, of shape (3, H, W)
   - attn_weights: Attention weight tensor, on the final activation map

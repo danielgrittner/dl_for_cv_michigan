@@ -21,6 +21,7 @@ def hello():
   """
   print('Hello from network_visualization.py!')
 
+
 def compute_saliency_maps(X, y, model):
   """
   Compute a class saliency map using the model for images X and labels y.
@@ -36,6 +37,8 @@ def compute_saliency_maps(X, y, model):
   """
   # Make input tensor require gradient
   X.requires_grad_()
+
+  model.eval()  # Just to be sure...
   
   saliency = None
   ##############################################################################
@@ -46,12 +49,24 @@ def compute_saliency_maps(X, y, model):
   # the gradients with a backward pass.                                        #
   # Hint: X.grad.data stores the gradients                                     #
   ##############################################################################
-  # Replace "pass" statement with your code
-  pass
+  
+  # Forward pass
+  prediction = model(X)
+  loss = torch.nn.functional.cross_entropy(prediction, y, reduction='sum')
+  # Backward pass to compute the gradient
+  loss.backward()
+
+  saliency = X.grad.data.abs()  # (N, 3, H, W)
+  saliency = saliency.max(dim=1)[0].clone()  # (N, H, W)
+
+  # Set the gradients to 0 again (for re-usability)
+  X.grad.zero_()
+  
   ##############################################################################
   #               END OF YOUR CODE                                             #
   ##############################################################################
   return saliency
+
 
 def make_adversarial_attack(X, target_y, model, max_iter=100, verbose=True):
   """
@@ -87,8 +102,37 @@ def make_adversarial_attack(X, target_y, model, max_iter=100, verbose=True):
   # attack in fewer than 100 iterations of gradient ascent.                    #
   # You can print your progress over iterations to check your algorithm.       #
   ##############################################################################
-  # Replace "pass" statement with your code
-  pass
+  
+  model.eval()  # Just to be sure...
+  
+  # Now, we can generate the adverserial attack
+  for i in range(max_iter):
+    scores = model(X_adv)
+
+    # What is the current max score which we need to beat?
+    max_score = scores.max(dim=1)[0]
+    target_score = scores[0][target_y]
+
+    if target_score == max_score:
+      break
+
+    # We need to keep training...
+    loss = target_score
+
+    if verbose:
+      print(f'Iteration {i + 1}: target score {target_score.item()}, max score {max_score[0].item()}')
+
+    # Get the gradients for X_adv
+    loss.backward()
+
+    # Update step
+    with torch.no_grad():
+      # IMPORTANT: With ascent we ADD gradients!
+      X_adv += learning_rate * X_adv.grad.data / X_adv.grad.data.norm(p=2)
+      X_adv.grad.zero_()
+
+  print(f"Finished generating an adverserial example after {i + 1} epochs.")
+  
   ##############################################################################
   #                             END OF YOUR CODE                               #
   ##############################################################################
@@ -122,8 +166,22 @@ def class_visualization_step(img, target_y, model, **kwargs):
     # the generated image using gradient ascent & reset img.grad to zero   #
     # after each step.                                                     #
     ########################################################################
-    # Replace "pass" statement with your code
-    pass
+    
+    # Forward pass
+    scores = model(img) # (1, C) where C = 1'000
+
+    # Compute the gradients (also applying L2 regularization)
+    target_score = scores[0][target_y]
+    loss = target_score - l2_reg * (img * img).sum()
+    loss.backward()
+
+    with torch.no_grad():
+      img.grad.data += l2_reg * 2 * img  # L2 regularization
+      # Update the image with the L2-regularized gradients
+      img += learning_rate * img.grad.data
+
+      img.grad.zero_()
+
     ########################################################################
     #                             END OF YOUR CODE                         #
     ########################################################################

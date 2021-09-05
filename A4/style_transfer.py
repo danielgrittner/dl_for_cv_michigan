@@ -7,12 +7,14 @@ import torch
 import torch.nn as nn
 from a4_helper import *
 
+
 def hello():
   """
   This is a sample function that we will try to import and run to ensure that
   our environment is correctly set up on Google Colab.
   """
   print('Hello from style_transfer.py!')
+
 
 def content_loss(content_weight, content_current, content_original):
     """
@@ -30,11 +32,20 @@ def content_loss(content_weight, content_current, content_original):
     ##############################################################################
     # TODO: Compute the content loss for style transfer.                         #
     ##############################################################################
-    # Replace "pass" statement with your code
-    pass
+    
+    # Feature map for the current image (content_current)
+    F = content_current
+
+    # Feature map for the content source image (content_original)
+    P = content_original
+    
+    diff = F - P
+    loss = content_weight * (diff * diff).sum()
+
     ##############################################################################
     #                               END OF YOUR CODE                             #
     ##############################################################################
+    return loss
 
 
 def gram_matrix(features, normalize=True):
@@ -56,8 +67,16 @@ def gram_matrix(features, normalize=True):
     # TODO: Compute the Gram matrix from features.                               #
     # Don't forget to implement for both normalized and non-normalized version   #
     ##############################################################################
-    # Replace "pass" statement with your code
-    pass
+
+    N, C, H, W = features.size()
+
+    features = features.reshape(N, C, -1) # (N, C, H*W)
+    gram = features.matmul(features.permute(0, 2, 1))
+
+    if normalize:
+      # Divide by the number of neurons for normalization
+      gram /= C * H * W
+
     ##############################################################################
     #                               END OF YOUR CODE                             #
     ##############################################################################
@@ -88,11 +107,22 @@ def style_loss(feats, style_layers, style_targets, style_weights):
     # not be very much code (~5 lines).                                          #
     # You will need to use your gram_matrix function.                            #
     ##############################################################################
-    # Replace "pass" statement with your code
-    pass
+    
+    style_loss = 0.0
+
+    for idx, l in enumerate(style_layers):
+      G_l = gram_matrix(feats[l])
+      A_l = style_targets[idx]
+
+      diff = G_l - A_l
+      style_loss_l = style_weights[idx] * (diff * diff).sum()
+      
+      style_loss += style_loss_l
+    
     ##############################################################################
     #                               END OF YOUR CODE                             #
     ##############################################################################
+    return style_loss
 
 
 def tv_loss(img, tv_weight):
@@ -111,8 +141,16 @@ def tv_loss(img, tv_weight):
     # TODO: Compute total variation loss.                                        #
     # Your implementation should be vectorized and not require any loops!        #
     ##############################################################################
-    # Replace "pass" statement with your code
-    pass
+
+    lhs_diff = img[:, :, 1:, :] - img[:, :, :-1, :]
+    lhs = (lhs_diff * lhs_diff).sum()
+
+    rhs_diff = img[:, :, :, 1:] - img[:, :, :, :-1]
+    rhs = (rhs_diff * rhs_diff).sum()
+
+    total_variation_loss = tv_weight * (lhs + rhs)
+    
     ##############################################################################
     #                               END OF YOUR CODE                             #
     ##############################################################################
+    return total_variation_loss

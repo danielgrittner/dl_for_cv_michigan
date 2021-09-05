@@ -9,12 +9,14 @@ import torch.nn as nn
 from a4_helper import *
 from torch.nn.parameter import Parameter 
 
+
 def hello():
   """
   This is a sample function that we will try to import and run to ensure that
   our environment is correctly set up on Google Colab.
   """
   print('Hello from rnn_lstm_attention_captioning.py!')
+
 
 class FeatureExtractor(object):
   """
@@ -101,8 +103,14 @@ def rnn_step_forward(x, prev_h, Wx, Wh, b):
     # and cache variables respectively.                                          #
     # Hint: You can use torch.tanh()                                             #
     ##############################################################################
-    # Replace "pass" statement with your code
-    pass
+    
+    x_Wx = x.matmul(Wx)
+    prev_h_Wh = prev_h.matmul(Wh)
+    inner = x_Wx + prev_h_Wh + b
+    next_h = torch.tanh(inner)
+
+    cache = (x, prev_h, Wx, Wh, next_h)
+
     ##############################################################################
     #                               END OF YOUR CODE                             #
     ##############################################################################
@@ -131,8 +139,23 @@ def rnn_step_backward(dnext_h, cache):
     # HINT: For the tanh function, you can compute the local derivative in terms #
     # of the output value from tanh.                                             #
     ##############################################################################
-    # Replace "pass" statement with your code
-    pass
+    
+    x, prev_h, Wx, Wh, tanh_out = cache
+
+    dtanh = 1 - tanh_out * tanh_out
+    dLdtanh = dtanh * dnext_h # (N, H)
+    # dLdtanh is needed for every gradient (upstream gradient)
+
+    dx = dLdtanh.matmul(Wx.T) # (N, D)
+
+    dprev_h = dLdtanh.matmul(Wh.T) # (N, H)
+
+    dWx = x.T.matmul(dLdtanh) # (D, H)
+
+    dWh = prev_h.T.matmul(dLdtanh) # (H, H)
+
+    db = dLdtanh.sum(axis=0) # (H,)
+    
     ##############################################################################
     #                               END OF YOUR CODE                             #
     ##############################################################################
@@ -163,8 +186,21 @@ def rnn_forward(x, h0, Wx, Wh, b):
     # input data. You should use the rnn_step_forward function that you defined  #
     # above. You can use a for loop to help compute the forward pass.            #
     ##############################################################################
-    # Replace "pass" statement with your code
-    pass
+    
+    _, T, _ = x.size()
+    N, H = h0.size()
+
+    cache_ts = []
+    h = torch.empty((N, T, H), device=h0.device, dtype=h0.dtype)
+
+    h_t = h0
+    for t in range(T):
+      h_t, cache_t = rnn_step_forward(x[:, t, :].squeeze(1), h_t, Wx, Wh, b)
+      cache_ts.append(cache_t)
+      h[:, t, :] = h_t
+    
+    cache = (cache_ts, x, h0, Wx, Wh, b)
+    
     ##############################################################################
     #                               END OF YOUR CODE                             #
     ##############################################################################
@@ -196,8 +232,29 @@ def rnn_backward(dh, cache):
     # sequence of data. You should use the rnn_step_backward function that you   #
     # defined above. You can use a for loop to help compute the backward pass.   #
     ##############################################################################
-    # Replace "pass" statement with your code
-    pass
+
+    cache_ts, x, h0, Wx, Wh, b = cache
+
+    dx = torch.zeros_like(x)
+    dh0 = torch.zeros_like(h0)
+    dWx = torch.zeros_like(Wx)
+    dWh = torch.zeros_like(Wh)
+    db = torch.zeros_like(b)
+
+    dh_t = torch.zeros_like(h0)
+
+    for t_rev, cache_t in enumerate(reversed(cache_ts)):
+      t = len(cache_ts) - t_rev - 1
+
+      dx_t, dh_t, dWx_t, dWh_t, db_t = rnn_step_backward(dh[:, t, :].squeeze(1) + dh_t, cache_t)
+
+      dx[:, t, :] += dx_t
+      dWx += dWx_t
+      dWh += dWh_t
+      db += db_t
+
+    dh0 = dh_t
+    
     ##############################################################################
     #                               END OF YOUR CODE                             #
     ##############################################################################
@@ -227,6 +284,8 @@ class RNN(nn.Module):
     """
     super().__init__()
     
+    # NOTE: We must register the self-managed weights as parameters, so that they get tracked and they
+    # get updated by the optimizer!
     # Register parameters
     self.Wx = Parameter(torch.randn(input_size, hidden_size,
                        device=device, dtype=dtype).div(math.sqrt(input_size)))
@@ -279,11 +338,18 @@ class WordEmbedding(nn.Module):
                device='cpu', dtype=torch.float32):
       super().__init__()
       
+      # W_embed ==> maps each word from the vocabulary (size V) to a learnable word vector 
+      # of length D
+      #
       # Register parameters
       self.W_embed = Parameter(torch.randn(vocab_size, embed_size,
-                         device=device, dtype=dtype).div(math.sqrt(vocab_size)))
+                         device=device, dtype=dtype).div(math.sqrt(vocab_size))) # (V, D)
       
   def forward(self, x):
+      """
+      Inputs:
+      - x: Integer array of shape (N, T) giving indices of words
+      """
 
       out = None
       ##############################################################################
@@ -291,8 +357,9 @@ class WordEmbedding(nn.Module):
       #                                                                            #
       # HINT: This can be done in one line using PyTorch's array indexing.           #
       ##############################################################################
-      # Replace "pass" statement with your code
-      pass
+
+      out = self.W_embed[x]
+      
       ##############################################################################
       #                               END OF YOUR CODE                             #
       ##############################################################################
@@ -336,199 +403,14 @@ def temporal_softmax_loss(x, y, ignore_index=None):
     # We use a cross-entropy loss at each timestep, *summing* the loss over      #
     # all timesteps and *averaging* across the minibatch.                        #
     ##############################################################################
-    # Replace "pass" statement with your code
-    pass
+
+    loss = F.cross_entropy(x.reshape(-1, x.size()[-1]), y.reshape(-1), ignore_index=ignore_index, reduction='sum') / x.size()[0]
+    
     ##############################################################################
     #                               END OF YOUR CODE                             #
     ##############################################################################
     
     return loss
-
-
-class CaptioningRNN(nn.Module):
-    """
-    A CaptioningRNN produces captions from images using a recurrent
-    neural network.
-
-    The RNN receives input vectors of size D, has a vocab size of V, works on
-    sequences of length T, has an RNN hidden dimension of H, uses word vectors
-    of dimension W, and operates on minibatches of size N.
-
-    Note that we don't use any regularization for the CaptioningRNN.
-    
-    You will implement the `__init__` method for model initialization and
-    the `forward` method first, then come back for the `sample` method later.
-    """
-    def __init__(self, word_to_idx, input_dim=512, wordvec_dim=128,
-                 hidden_dim=128, cell_type='rnn', device='cpu', 
-                 ignore_index=None, dtype=torch.float32):
-        """
-        Construct a new CaptioningRNN instance.
-
-        Inputs:
-        - word_to_idx: A dictionary giving the vocabulary. It contains V entries,
-          and maps each string to a unique integer in the range [0, V).
-        - input_dim: Dimension D of input image feature vectors.
-        - wordvec_dim: Dimension W of word vectors.
-        - hidden_dim: Dimension H for the hidden state of the RNN.
-        - cell_type: What type of RNN to use; either 'rnn' or 'lstm'.
-        - dtype: datatype to use; use float32 for training and float64 for
-          numeric gradient checking.
-        """
-        super().__init__()
-        if cell_type not in {'rnn', 'lstm', 'attention'}:
-            raise ValueError('Invalid cell_type "%s"' % cell_type)
-
-        self.cell_type = cell_type
-        self.word_to_idx = word_to_idx
-        self.idx_to_word = {i: w for w, i in word_to_idx.items()}
-
-        vocab_size = len(word_to_idx)
-
-        self._null = word_to_idx['<NULL>']
-        self._start = word_to_idx.get('<START>', None)
-        self._end = word_to_idx.get('<END>', None)
-        self.ignore_index = ignore_index  
-        
-        ##########################################################################
-        # TODO: Initialize the image captioning module. Refer to the TODO        #
-        # in the captioning_forward function on layers you need to create        #
-        #                                                                        #
-        # Hint: You may want to check the following pre-defined classes:         #
-        # FeatureExtractor, WordEmbedding, RNN, LSTM, AttentionLSTM,             #
-        # torch.nn.Linear                                                        #
-        #                                                                        #
-        # Hint: You can use nn.Linear for both                                   #
-        # i) output projection (from RNN hidden state to vocab probability) and  #
-        # ii) feature projection (from CNN pooled feature to h0)                 #
-        #                                                                        #
-        # Hint: In FeatureExtractor, set pooling=True to get the pooled CNN      #
-        #       feature and pooling=False to get the CNN activation map.         #
-        ##########################################################################
-        # Replace "pass" statement with your code
-        pass
-        #############################################################################
-        #                              END OF YOUR CODE                             #
-        #############################################################################
-    
-    def forward(self, images, captions):
-        """
-        Compute training-time loss for the RNN. We input images and
-        ground-truth captions for those images, and use an RNN (or LSTM) to compute
-        loss. The backward part will be done by torch.autograd.
-
-        Inputs:
-        - images: Input images, of shape (N, 3, 112, 112)
-        - captions: Ground-truth captions; an integer array of shape (N, T + 1) where
-          each element is in the range 0 <= y[i, t] < V
-
-        Outputs:
-        - loss: A scalar loss
-        """
-        # Cut captions into two pieces: captions_in has everything but the last word
-        # and will be input to the RNN; captions_out has everything but the first
-        # word and this is what we will expect the RNN to generate. These are offset
-        # by one relative to each other because the RNN should produce word (t+1)
-        # after receiving word t. The first element of captions_in will be the START
-        # token, and the first element of captions_out will be the first word.
-        captions_in = captions[:, :-1]
-        captions_out = captions[:, 1:]
-
-        loss = 0.0
-        ############################################################################
-        # TODO: Implement the forward pass for the CaptioningRNN.                  #
-        # In the forward pass you will need to do the following:                   #
-        # (1) Use an affine transformation to project the image feature to         #
-        #     the initial hidden state $h0$ (for RNN/LSTM, of shape (N, H)) or     #
-        #     the projected CNN activation input $A$ (for Attention LSTM,          #
-        #     of shape (N, H, 4, 4).                                               #
-        # (2) Use a word embedding layer to transform the words in captions_in     #
-        #     from indices to vectors, giving an array of shape (N, T, W).         #
-        # (3) Use either a vanilla RNN or LSTM (depending on self.cell_type) to    #
-        #     process the sequence of input word vectors and produce hidden state  #
-        #     vectors for all timesteps, producing an array of shape (N, T, H).    #
-        # (4) Use a (temporal) affine transformation to compute scores over the    #
-        #     vocabulary at every timestep using the hidden states, giving an      #
-        #     array of shape (N, T, V).                                            #
-        # (5) Use (temporal) softmax to compute loss using captions_out, ignoring  #
-        #     the points where the output word is <NULL>.                          #
-        #                                                                          #
-        # Do not worry about regularizing the weights or their gradients!          #
-        ############################################################################
-        # Replace "pass" statement with your code
-        pass
-        ############################################################################
-        #                             END OF YOUR CODE                             #
-        ############################################################################
-
-        return loss
-
-    def sample(self, images, max_length=15):
-        """
-        Run a test-time forward pass for the model, sampling captions for input
-        feature vectors.
-
-        At each timestep, we embed the current word, pass it and the previous hidden
-        state to the RNN to get the next hidden state, use the hidden state to get
-        scores for all vocab words, and choose the word with the highest score as
-        the next word. The initial hidden state is computed by applying an affine
-        transform to the image features, and the initial word is the <START>
-        token.
-
-        For LSTMs you will also have to keep track of the cell state; in that case
-        the initial cell state should be zero.
-
-        Inputs:
-        - images: Input images, of shape (N, 3, 112, 112)
-        - max_length: Maximum length T of generated captions
-
-        Returns:
-        - captions: Array of shape (N, max_length) giving sampled captions,
-          where each element is an integer in the range [0, V). The first element
-          of captions should be the first sampled word, not the <START> token.
-        """
-        N = images.shape[0]
-        captions = self._null * images.new(N, max_length).fill_(1).long()
-
-        if self.cell_type == 'attention':
-          attn_weights_all = images.new(N, max_length, 4, 4).fill_(0).float()
-
-        ###########################################################################
-        # TODO: Implement test-time sampling for the model. You will need to      #
-        # initialize the hidden state of the RNN by applying the learned affine    #
-        # transform to the image features. The first word that you feed to         #
-        # the RNN should be the <START> token; its value is stored in the         #
-        # variable self._start. At each timestep you will need to do to:          #
-        # (1) Embed the previous word using the learned word embeddings           #
-        # (2) Make an RNN step using the previous hidden state and the embedded   #
-        #     current word to get the next hidden state.                          #
-        # (3) Apply the learned affine transformation to the next hidden state to  #
-        #     get scores for all words in the vocabulary                          #
-        # (4) Select the word with the highest score as the next word, writing it #
-        #     (the word index) to the appropriate slot in the captions variable   #
-        #                                                                         #
-        # For simplicity, you do not need to stop generating after an <END> token #
-        # is sampled, but you can if you want to.                                 #
-        #                                                                         #
-        # HINT: You will not be able to use the rnn_forward or lstm_forward       #
-        # functions; you'll need to call the `step_forward` from the              #
-        # RNN/LSTM/AttentionLSTM module in a loop.                                #
-        #                                                                         #
-        # NOTE: we are still working over minibatches in this function. Also if   #
-        # you are using an LSTM, initialize the first cell state to zeros.         #
-        # For AttentionLSTM, first project the 1280x4x4 CNN feature activation to  #
-        # $A$ of shape Hx4x4. The LSTM initial hidden state and cell state        #
-        # would both be A.mean(dim=(2, 3)).                                       #
-        ###########################################################################
-        # Replace "pass" statement with your code
-        pass
-        ############################################################################
-        #                             END OF YOUR CODE                             #
-        ############################################################################
-        if self.cell_type == 'attention':
-          return captions, attn_weights_all.cpu()
-        else:
-          return captions
 
 
 ##############################################################################
@@ -551,6 +433,8 @@ def lstm_step_forward(x, prev_h, prev_c, Wx, Wh, b, attn=None, Wattn=None):
     - b: Biases, of shape (4H,)
     - attn and Wattn are for Attention LSTM only, indicate the attention input and
       embedding weights for the attention input
+        - attn: Attention embedding output, of shape (N, H)
+        - Wattn: Attention embedding weight matrix (Note: != attn_weights) (H, 4H)
 
     Returns a tuple of:
     - next_h: Next hidden state, of shape (N, H)
@@ -561,8 +445,29 @@ def lstm_step_forward(x, prev_h, prev_c, Wx, Wh, b, attn=None, Wattn=None):
     # TODO: Implement the forward pass for a single timestep of an LSTM.        #
     # You may want to use torch.sigmoid() for the sigmoid function.             #
     #############################################################################
-    # Replace "pass" statement with your code
-    pass
+    
+    is_attention_lstm = attn is not None
+    assert not is_attention_lstm or Wattn is not None
+
+    # 1) Compute the activation vector a
+    a = x.matmul(Wx) + prev_h.matmul(Wh) + b # (N x 4H)
+    if is_attention_lstm:
+      a += attn.matmul(Wattn) # (N x 4H)
+
+    # 2) Split a into 4 tensors
+    H = prev_h.size()[1]
+    a_i, a_f, a_o, a_g = torch.split(a, H, dim=1) # Each: (N x H)
+
+    # 3) Apply activation functions
+    input_gate = torch.sigmoid(a_i) # (N x H)
+    forget_gate = torch.sigmoid(a_f) # (N x H)
+    output_gate = torch.sigmoid(a_o) # (N x H)
+    block_input = torch.tanh(a_g) # (N x H)
+
+    # 4) Compute the next cell state and the next hidden state
+    next_c = forget_gate * prev_c + input_gate * block_input # (N x H)
+    next_h = output_gate * torch.tanh(next_c) # (N x H)
+    
     ##############################################################################
     #                               END OF YOUR CODE                             #
     ##############################################################################
@@ -597,13 +502,24 @@ def lstm_forward(x, h0, Wx, Wh, b):
     # TODO: Implement the forward pass for an LSTM over an entire timeseries.   #
     # You should use the lstm_step_forward function that you just defined.       #
     #############################################################################
-    # Replace "pass" statement with your code
-    pass
+    
+    T = x.size()[1]
+    N, H = h0.size()
+
+    h = torch.empty((N, T, H), dtype=h0.dtype, device=h0.device) # (N x T x H)
+    h_t = h0 # (N x H)
+    c_t = c0 # (N x H)
+    
+    for t in range(T):
+      h_t, c_t = lstm_step_forward(x[:, t, :].squeeze(1), h_t, c_t, Wx, Wh, b)
+      h[:, t, :] = h_t
+    
     ##############################################################################
     #                               END OF YOUR CODE                             #
     ##############################################################################
 
     return h
+
 
 class LSTM(nn.Module):
   """
@@ -625,11 +541,11 @@ class LSTM(nn.Module):
     super().__init__()
     
     # Register parameters
-    self.Wx = Parameter(torch.randn(input_size, hidden_size*4,
+    self.Wx = Parameter(torch.randn(input_size, hidden_size * 4,
                        device=device, dtype=dtype).div(math.sqrt(input_size)))
-    self.Wh = Parameter(torch.randn(hidden_size, hidden_size*4,
+    self.Wh = Parameter(torch.randn(hidden_size, hidden_size * 4,
                        device=device, dtype=dtype).div(math.sqrt(hidden_size)))
-    self.b = Parameter(torch.zeros(hidden_size*4,
+    self.b = Parameter(torch.zeros(hidden_size * 4,
                        device=device, dtype=dtype))
     
   def forward(self, x, h0):
@@ -643,7 +559,7 @@ class LSTM(nn.Module):
     """
     hn = lstm_forward(x, h0, self.Wx, self.Wh, self.b)
     return hn
-  
+
   def step_forward(self, x, prev_h, prev_c):
     """
     Inputs:
@@ -684,12 +600,19 @@ def dot_product_attention(prev_h, A):
     # You will use this function for `attention_forward` and `sample_caption`   #
     # HINT: Make sure you reshape attn_weights back to (N, 4, 4)!               #
     #############################################################################
-    # Replace "pass" statement with your code
-    pass
+
+    A_tilde = A.reshape(N, H, D_a * D_a) # (N x H x D_a*D_a), i.e. (N x H x 16)
+    
+    attn_weights = prev_h.unsqueeze(1).matmul(A_tilde).squeeze(1) * H**(-0.5) # (N x D_a*D_a), i.e. (N x 16)
+    attn_weights = torch.softmax(attn_weights, dim=1) # (N x D_a*D_a), i.e. (N x 16)
+    
+    attn = A_tilde.matmul(attn_weights.unsqueeze(-1)).squeeze(-1) # (N x H), i.e. (N x 16)
+    attn_weights = attn_weights.reshape(N, D_a, D_a) # (N x D_a x D_a), i.e. (N x 4 x 4)
+
     ##############################################################################
     #                               END OF YOUR CODE                             #
     ##############################################################################
-    
+
     return attn, attn_weights
 
 
@@ -733,8 +656,19 @@ def attention_forward(x, A, Wx, Wh, Wattn, b):
     # You should use the lstm_step_forward function and dot_product_attention   #
     # function that you just defined.                                           #
     #############################################################################
-    # Replace "pass" statement with your code
-    pass
+
+    N, T, _ = x.size()
+    H = A.size()[1]
+
+    h = torch.empty((N, T, H), dtype=h0.dtype, device=h0.device) # (N x T x H)
+    
+    h_t = h0
+    c_t = c0
+    for t in range(T):
+      attn, _ = dot_product_attention(h_t, A) # (N x H)
+      h_t, c_t = lstm_step_forward(x[:, t, :].squeeze(1), h_t, c_t, Wx, Wh, b, attn=attn, Wattn=Wattn) # (N x H) and (N x H)
+      h[:, t, :] = h_t
+    
     ##############################################################################
     #                               END OF YOUR CODE                             #
     ##############################################################################
@@ -800,3 +734,311 @@ class AttentionLSTM(nn.Module):
                                        self.b, attn=attn, Wattn=self.Wattn)
     return next_h, next_c
 
+
+##############################################################################
+# Captioning Model                                                           #
+##############################################################################
+
+
+class CaptioningRNN(nn.Module):
+    """
+    A CaptioningRNN produces captions from images using a recurrent
+    neural network.
+
+    The RNN receives input vectors of size D, has a vocab size of V, works on
+    sequences of length T, has an RNN hidden dimension of H, uses word vectors
+    of dimension W, and operates on minibatches of size N.
+
+    Note that we don't use any regularization for the CaptioningRNN.
+    
+    You will implement the `__init__` method for model initialization and
+    the `forward` method first, then come back for the `sample` method later.
+    """
+    def __init__(self, word_to_idx, input_dim=512, wordvec_dim=128,
+                 hidden_dim=128, cell_type='rnn', device='cpu', 
+                 ignore_index=None, dtype=torch.float32):
+        """
+        Construct a new CaptioningRNN instance.
+
+        Inputs:
+        - word_to_idx: A dictionary giving the vocabulary. It contains V entries,
+          and maps each string to a unique integer in the range [0, V).
+        - input_dim: Dimension D of input image feature vectors.
+        - wordvec_dim: Dimension W of word vectors.
+        - hidden_dim: Dimension H for the hidden state of the RNN.
+        - cell_type: What type of RNN to use; either 'rnn' or 'lstm'.
+        - dtype: datatype to use; use float32 for training and float64 for
+          numeric gradient checking.
+        """
+        super().__init__()
+        if cell_type not in {'rnn', 'lstm', 'attention'}:
+            raise ValueError('Invalid cell_type "%s"' % cell_type)
+
+        self.cell_type = cell_type
+        self.word_to_idx = word_to_idx
+        self.idx_to_word = {i: w for w, i in word_to_idx.items()}
+
+        vocab_size = len(word_to_idx)
+
+        self._null = word_to_idx['<NULL>']
+        self._start = word_to_idx.get('<START>', None)
+        self._end = word_to_idx.get('<END>', None)
+        self.ignore_index = ignore_index  
+
+        self.H = hidden_dim
+        
+        ##########################################################################
+        # TODO: Initialize the image captioning module. Refer to the TODO        #
+        # in the captioning_forward function on layers you need to create        #
+        #                                                                        #
+        # Hint: You may want to check the following pre-defined classes:         #
+        # FeatureExtractor, WordEmbedding, RNN, LSTM, AttentionLSTM,             #
+        # torch.nn.Linear                                                        #
+        #                                                                        #
+        # Hint: You can use nn.Linear for both                                   #
+        # i) output projection (from RNN hidden state to vocab probability) and  #
+        # ii) feature projection (from CNN pooled feature to h0)                 #
+        #                                                                        #
+        # Hint: In FeatureExtractor, set pooling=True to get the pooled CNN      #
+        #       feature and pooling=False to get the CNN activation map.         #
+        ##########################################################################
+
+        self.meta = {'device': device, 'dtype': dtype}
+        
+        should_pool = cell_type != 'attention'
+        # N x 1280 (pooled) or N x 1280 x 4 x 4
+        # Note: D := 1280
+        self.feature_extractor = FeatureExtractor(pooling=should_pool, verbose=False, **self.meta)
+
+        self.feature_projection = nn.Linear(input_dim, hidden_dim, **self.meta)
+
+        self.word_embedding = WordEmbedding(vocab_size, wordvec_dim, **self.meta)
+
+        if cell_type == 'rnn':
+          self.core_cell = RNN(wordvec_dim, hidden_dim, **self.meta)
+        elif cell_type == 'lstm':
+          self.core_cell = LSTM(wordvec_dim, hidden_dim, **self.meta)
+        elif cell_type == 'attention':
+          self.core_cell = AttentionLSTM(wordvec_dim, hidden_dim, **self.meta)
+        else:
+          raise ValueError(f'Unknown cell type: {cell_type}')
+
+        self.output_projection = nn.Linear(hidden_dim, vocab_size, **self.meta)
+
+        #############################################################################
+        #                              END OF YOUR CODE                             #
+        #############################################################################
+
+    def __apply_feature_projection_to_attention_lstm(self, image_features):
+        # TODO: this can be simplified ==> dimension reduction is not necessary! 
+        N, D, D_a, _ = image_features.size()
+        temp = image_features.reshape(N, D, -1).permute(0, 2, 1) # (N x 16 x D)
+        A = self.feature_projection(temp) # (N x 16 x H)
+        A = A.permute(0, 2, 1).reshape(N, -1, D_a, D_a) # (N x H x 4 x 4)
+        return A
+    
+    def forward(self, images, captions):
+        """
+        Compute training-time loss for the RNN. We input images and
+        ground-truth captions for those images, and use an RNN (or LSTM) to compute
+        loss. The backward part will be done by torch.autograd.
+
+        Inputs:
+        - images: Input images, of shape (N, 3, 112, 112)
+        - captions: Ground-truth captions; an integer array of shape (N, T + 1) where
+          each element is in the range 0 <= y[i, t] < V
+
+        Outputs:
+        - loss: A scalar loss
+        """
+        # Cut captions into two pieces: captions_in has everything but the last word
+        # and will be input to the RNN; captions_out has everything but the first
+        # word and this is what we will expect the RNN to generate. These are offset
+        # by one relative to each other because the RNN should produce word (t+1)
+        # after receiving word t. The first element of captions_in will be the START
+        # token, and the first element of captions_out will be the first word.
+        captions_in = captions[:, :-1]
+        captions_out = captions[:, 1:]
+
+        loss = 0.0
+        ############################################################################
+        # TODO: Implement the forward pass for the CaptioningRNN.                  #
+        # In the forward pass you will need to do the following:                   #
+        # (1) Use an affine transformation to project the image feature to         #
+        #     the initial hidden state $h0$ (for RNN/LSTM, of shape (N, H)) or     #
+        #     the projected CNN activation input $A$ (for Attention LSTM),          #
+        #     of shape (N, H, 4, 4).                                               #
+        # (2) Use a word embedding layer to transform the words in captions_in     #
+        #     from indices to vectors, giving an array of shape (N, T, W).         #
+        # (3) Use either a vanilla RNN or LSTM (depending on self.cell_type) to    #
+        #     process the sequence of input word vectors and produce hidden state  #
+        #     vectors for all timesteps, producing an array of shape (N, T, H).    #
+        # (4) Use a (temporal) affine transformation to compute scores over the    #
+        #     vocabulary at every timestep using the hidden states, giving an      #
+        #     array of shape (N, T, V).                                            #
+        # (5) Use (temporal) softmax to compute loss using captions_out, ignoring  #
+        #     the points where the output word is <NULL>.                          #
+        #                                                                          #
+        # Do not worry about regularizing the weights or their gradients!          #
+        ##########################################################################
+        
+        # 0) Extract the image features
+        image_features = self.feature_extractor.extract_mobilenet_feature(images) # (N x D) (pooled) or (N x D x 4 x 4) (D == 1280 here)
+
+        # 1) Embed the words from captions_in
+        captions_in_embedded = self.word_embedding(captions_in) # (N x T x W)
+
+        if self.cell_type == 'attention':
+          # 2) Create attention mattrix
+          
+          # TODO: Why doesn't this work in Colab?
+          # A = self.__apply_feature_projection_to_attention_lstm(image_features) # (N x H x 4 x 4)
+          # N, D, D_a, _ = image_features.size()
+          # temp = image_features.reshape(N, D, -1).permute(0, 2, 1) # (N x 16 x D)
+          # A = self.feature_projection(temp) # (N x 16 x H)
+          # A = A.permute(0, 2, 1).reshape(N, -1, D_a, D_a) # (N x H x 4 x 4)
+
+          A = self.feature_projection(image_features.permute(0, 2, 3, 1)).permute(0, 3, 1, 2) # (N x H x 4 x 4)
+
+          # 3) Apply Attention LSTM
+          hs = self.core_cell(captions_in_embedded, A)
+        else:
+          # 2) Project the image features to the initial hidden state h0
+          h0 = self.feature_projection(image_features) # (N x H)
+          # 3) Process the sequence of input word vectors and produce hidden state vectors for all timesteps
+          hs = self.core_cell(captions_in_embedded, h0) # (N x T x H)
+
+        # 4) Use a (temporal) affine transformation for the scores over the vocabulary at every timestep using the hidden states
+        predictions = self.output_projection(hs) # (N x T x vocab_size)
+
+        # 5) Use (temporal) softmax to compute loss using captions_out
+        loss = temporal_softmax_loss(predictions, captions_out, ignore_index=self.ignore_index)
+        
+        ############################################################################
+        #                             END OF YOUR CODE                             #
+        ############################################################################
+
+        return loss
+
+    def sample(self, images, max_length=15):
+        """
+        Run a test-time forward pass for the model, sampling captions for input
+        feature vectors.
+
+        At each timestep, we embed the current word, pass it and the previous hidden
+        state to the RNN to get the next hidden state, use the hidden state to get
+        scores for all vocab words, and choose the word with the highest score as
+        the next word. The initial hidden state is computed by applying an affine
+        transform to the image features, and the initial word is the <START>
+        token.
+
+        For LSTMs you will also have to keep track of the cell state; in that case
+        the initial cell state should be zero.
+
+        Inputs:
+        - images: Input images, of shape (N, 3, 112, 112)
+        - max_length: Maximum length T of generated captions
+
+        Returns:
+        - captions: Array of shape (N, max_length) giving sampled captions,
+          where each element is an integer in the range [0, V). The first element
+          of captions should be the first sampled word, not the <START> token.
+        """
+        N = images.shape[0]
+        captions = self._null * images.new(N, max_length).fill_(1).long()
+
+        if self.cell_type == 'attention':
+          attn_weights_all = images.new(N, max_length, 4, 4).fill_(0).float()
+
+        ###########################################################################
+        # TODO: Implement test-time sampling for the model. You will need to      #
+        # initialize the hidden state of the RNN by applying the learned affine   #
+        # transform to the image features. The first word that you feed to        #
+        # the RNN should be the <START> token; its value is stored in the         #
+        # variable self._start. At each timestep you will need to do to:          #
+        # (1) Embed the previous word using the learned word embeddings           #
+        # (2) Make an RNN step using the previous hidden state and the embedded   #
+        #     current word to get the next hidden state.                          #
+        # (3) Apply the learned affine transformation to the next hidden state to #
+        #     get scores for all words in the vocabulary                          #
+        # (4) Select the word with the highest score as the next word, writing it #
+        #     (the word index) to the appropriate slot in the captions variable   #
+        #                                                                         #
+        # For simplicity, you do not need to stop generating after an <END> token #
+        # is sampled, but you can if you want to.                                 #
+        #                                                                         #
+        # HINT: You will not be able to use the rnn_forward or lstm_forward       #
+        # functions; you'll need to call the `step_forward` from the              #
+        # RNN/LSTM/AttentionLSTM module in a loop.                                #
+        #                                                                         #
+        # NOTE: we are still working over minibatches in this function. Also if   #
+        # you are using an LSTM, initialize the first cell state to zeros.        #
+        # For AttentionLSTM, first project the 1280x4x4 CNN feature activation to #
+        # $A$ of shape Hx4x4. The LSTM initial hidden state and cell state        #
+        # would both be A.mean(dim=(2, 3)).                                       #
+        ###########################################################################
+        
+        # 0) Extract the image features
+        image_features = self.feature_extractor.extract_mobilenet_feature(images) # (N x D) (pooled) or (N x D x 4 x 4) (D == 1280 here)
+
+        if self.cell_type == 'attention':
+          # TODO: Why doesn't this work in Colab?
+          # A = self.__apply_feature_projection_to_attention_lstm(image_features) # (N x H x 4 x 4)
+          # N, D, D_a, _ = image_features.size()
+          # temp = image_features.reshape(N, D, -1).permute(0, 2, 1) # (N x 16 x D)
+          # A = self.feature_projection(temp) # (N x 16 x H)
+          # A = A.permute(0, 2, 1).reshape(N, -1, D_a, D_a) # (N x H x 4 x 4)
+
+          A = self.feature_projection(image_features.permute(0, 2, 3, 1)).permute(0, 3, 1, 2) # (N x H x 4 x 4)
+
+          h_t = A.mean(dim=(2, 3)) # (N x H)
+          c_t = h_t # (N x H)
+
+          attn_weights_all = torch.empty((N, max_length, 4, 4)) # (N x T x 4 x 4)
+        else:
+          # Project the image features to the initial hidden state h0
+          h_t = self.feature_projection(image_features) # (N x H)
+
+          if self.cell_type == 'lstm':
+            # In case of LSTM, we also need c_t which we initialize with zeros!
+            c_t = torch.zeros_like(h_t) # (N x H)
+
+        prev_word = self._start
+        prev_word_vec = torch.ones(N, device=self.meta['device'], dtype=torch.long) * prev_word # (N)
+
+        h = torch.empty((N, max_length, self.H), **self.meta) # (N x T x H)
+
+        # 2) Perform the time steps 
+        for t in range(max_length):
+          # (1) Embed the previous word
+          prev_word_embedded = self.word_embedding(prev_word_vec) # (N x W)
+
+          # (2) RNN step
+          if self.cell_type == 'rnn':
+            h_t = self.core_cell.step_forward(prev_word_embedded, h_t) # (N x H)
+
+          elif self.cell_type  == 'lstm':
+            h_t, c_t = self.core_cell.step_forward(prev_word_embedded, h_t, c_t) # both (N x H)
+          
+          elif self.cell_type == 'attention':
+            attn, attn_weights = dot_product_attention(h_t, A) # (N x H) and (N x 4 x 4)
+            h_t, c_t = self.core_cell.step_forward(prev_word_embedded, h_t, c_t, attn)
+            attn_weights_all[:, t, :, :] = attn_weights # (N x T x 4 x 4)
+
+          else:
+            raise ValueError(f'Unknown cell type: {self.cell_type}')
+
+          # 3) Apply the learned affine transformation to get scores for all words in the vocabulary
+          scores = self.output_projection(h_t) # (N x vocab_size)
+
+          # 4) Select the words
+          prev_word_vec = scores.argmax(dim=-1)
+          captions[:, t] = prev_word_vec
+        
+        ############################################################################
+        #                             END OF YOUR CODE                             #
+        ############################################################################
+        if self.cell_type == 'attention':
+          return captions, attn_weights_all.cpu()
+        else:
+          return captions
