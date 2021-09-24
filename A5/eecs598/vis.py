@@ -74,8 +74,8 @@ def detection_visualizer(img, idx_to_class, bbox=None, pred=None):
     if bbox is not None:
         for bbox_idx in range(bbox.shape[0]):
             one_bbox = bbox[bbox_idx][:4]
-            cv2.rectangle(img_copy, (one_bbox[0], one_bbox[1]), (one_bbox[2],
-                        one_bbox[3]), (255, 0, 0), 2)
+            one_bbox = one_bbox.to(dtype=torch.long)
+            cv2.rectangle(img_copy, (one_bbox[0], one_bbox[1]), (one_bbox[2], one_bbox[3]), (255, 0, 0), 2)
             if bbox.shape[1] > 4: # if class info provided
                 obj_cls = idx_to_class[bbox[bbox_idx][4].item()]
                 cv2.putText(img_copy, '%s' % (obj_cls),
@@ -85,8 +85,8 @@ def detection_visualizer(img, idx_to_class, bbox=None, pred=None):
     if pred is not None:
         for bbox_idx in range(pred.shape[0]):
             one_bbox = pred[bbox_idx][:4]
-            cv2.rectangle(img_copy, (one_bbox[0], one_bbox[1]), (one_bbox[2],
-                        one_bbox[3]), (0, 255, 0), 2)
+            one_bbox = one_bbox.to(dtype=torch.long)
+            cv2.rectangle(img_copy, (one_bbox[0], one_bbox[1]), (one_bbox[2], one_bbox[3]), (0, 255, 0), 2)
             
             if pred.shape[1] > 4: # if class and conf score info provided
                 obj_cls = idx_to_class[pred[bbox_idx][4].item()]

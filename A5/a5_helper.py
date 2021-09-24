@@ -1,4 +1,5 @@
 import torch
+import torch.nn as nn
 import time
 import math
 import os
@@ -22,6 +23,7 @@ class_to_idx = {'aeroplane':0, 'bicycle':1, 'bird':2, 'boat':3, 'bottle':4,
                 'sheep':16, 'sofa':17, 'train':18, 'tvmonitor':19
 }
 idx_to_class = {i:c for c, i in class_to_idx.items()}
+
 
 def get_pascal_voc2007_data(image_root, split='train'):
   """
@@ -91,6 +93,7 @@ def voc_collate_fn(batch_lst, reshape_size=224):
 
     return img_batch, box_batch, w_batch, h_batch, img_id_list
 
+
 def coord_trans(bbox, w_pixel, h_pixel, w_amap=7, h_amap=7, mode='a2p'):
   """
   Coordinate transformation function. It converts the box coordinate from
@@ -141,7 +144,7 @@ def coord_trans(bbox, w_pixel, h_pixel, w_amap=7, h_amap=7, mode='a2p'):
   return resized_bbox
 
 
-class FeatureExtractor(torch.nn.Module):
+class FeatureExtractor(nn.Module):
   """
   Image feature extraction with MobileNet.
   """
@@ -149,14 +152,16 @@ class FeatureExtractor(torch.nn.Module):
     super().__init__()
 
     self.mobilenet = models.mobilenet_v2(pretrained=True)
-    self.mobilenet = torch.nn.Sequential(*list(self.mobilenet.children())[:-1]) # Remove the last classifier
+    self.mobilenet = nn.Sequential(*list(self.mobilenet.children())[:-1]) # Remove the last classifier
 
     # average pooling
     if pooling:
       self.mobilenet.add_module('LastAvgPool', nn.AvgPool2d(math.ceil(reshape_size/32.))) # input: N x 1280 x 7 x 7
 
+    # we also want to fine-tune the backbone network, therefore, we need to set
+    # all its parameters to requires_grad=True
     for i in self.mobilenet.named_parameters():
-      i[1].requires_grad = True # fine-tune all
+      i[1].requires_grad = True
 
     if verbose:
       summary(self.mobilenet.cuda(), (3, reshape_size, reshape_size))
@@ -185,6 +190,7 @@ class FeatureExtractor(torch.nn.Module):
     
     return feat
 
+
 def GenerateGrid(batch_size, w_amap=7, h_amap=7, dtype=torch.float32, device='cuda'):
   """
   Return a grid cell given a batch size (center coordinates).
@@ -199,11 +205,14 @@ def GenerateGrid(batch_size, w_amap=7, h_amap=7, dtype=torch.float32, device='cu
   grid: A float32 tensor of shape (B, H', W', 2) giving the (x, y) coordinates
         of the centers of each feature for a feature map of shape (B, D, H', W')
   """
+  # Tensor containing the range [0, w_amap] + 0.5 with step size 1
   w_range = torch.arange(0, w_amap, dtype=dtype, device=device) + 0.5
+  # Tensor containing the range [0, h_amap] + 0.5 with step size 1
   h_range = torch.arange(0, h_amap, dtype=dtype, device=device) + 0.5
 
   w_grid_idx = w_range.unsqueeze(0).repeat(h_amap, 1)
   h_grid_idx = h_range.unsqueeze(1).repeat(1, w_amap)
+  # Construct a grid which contains the center coordinates of each cell from the CNN feature map of size (w_amap, h_amap)
   grid = torch.stack([w_grid_idx, h_grid_idx], dim=-1)
   grid = grid.unsqueeze(0).repeat(batch_size, 1, 1, 1)
 
@@ -261,7 +270,7 @@ def ReferenceOnActivatedAnchors(anchors, bboxes, grid, iou_mat, pos_thresh=0.7, 
   - negative_anc_coord: Coordinates on negative anchors (mainly for visualization purposes)
   """
   
-  assert(method in ['FasterRCNN', 'YOLO'])
+  assert method in ['FasterRCNN', 'YOLO']
 
   B, A, h_amap, w_amap, _ = anchors.shape
   N = bboxes.shape[1]
@@ -290,16 +299,24 @@ def ReferenceOnActivatedAnchors(anchors, bboxes, grid, iou_mat, pos_thresh=0.7, 
     bboxes = bboxes[activated_anc_ind]
   else:
     bbox_mask = (bboxes[:, :, 0] != -1) # BxN, indicate invalid boxes
+    # Calculate the center of the bbox
     bbox_centers = (bboxes[:, :, 2:4] - bboxes[:, :, :2]) / 2. + bboxes[:, :, :2] # BxNx2
 
+    # Calculate manhattan distance between grid cell centers and bbox centers
     mah_dist = torch.abs(grid.view(B, -1, 2).unsqueeze(2) - bbox_centers.unsqueeze(1)).sum(dim=-1) # Bx(H'xW')xN
+    # Only keep the bboxes which have minimum manhattan distance over (H'xW') and 
+    # for each sample only keep N bboxes
     min_mah_dist = mah_dist.min(dim=1, keepdim=True)[0] # Bx1xN
     grid_mask = (mah_dist == min_mah_dist).unsqueeze(1) # Bx1x(H'xW')xN
 
-    reshaped_iou_mat = iou_mat.view(B, A, -1, N)
+    # Over dimension A, only keep the anchor with the largest IoU
+    reshaped_iou_mat = iou_mat.view(B, A, -1, N) # BxAx(H'xW')xN
     anc_with_largest_iou = reshaped_iou_mat.max(dim=1, keepdim=True)[0] # Bx1x(H’xW’)xN
     anc_mask = (anc_with_largest_iou == reshaped_iou_mat) # BxAx(H’xW’)xN
+    
+    # Only keep the anchors, 
     activated_anc_mask = (grid_mask & anc_mask).view(B, -1, N)
+    # By applying bbox_mask, we remove the invalid anchors
     activated_anc_mask &= bbox_mask.unsqueeze(1)
     
     # one anchor could match multiple GT boxes
@@ -355,7 +372,7 @@ def ObjectClassification(class_prob, GT_class, batch_size, anc_per_img, activate
   """
   # average within sample and then average across batch
   # such that the class pred would not bias towards dense popular objects like `person`
-  all_loss = torch.nn.functional.cross_entropy(class_prob, GT_class, reduction='none')
+  all_loss = nn.functional.cross_entropy(class_prob, GT_class, reduction='none')
   object_cls_loss = 0
   for idx in range(batch_size):
     anc_ind_in_img = (activated_anc_ind >= idx * anc_per_img) & (activated_anc_ind < (idx+1) * anc_per_img)
@@ -459,9 +476,6 @@ def DetectionInference(detector, data_loader, dataset, idx_to_class, thresh=0.8,
 
   # ship model to GPU
   detector.to(dtype=dtype, device=device)
- 
-  detector.eval()
-  start_t = time.time()
 
   if output_dir is not None:
     det_dir = 'mAP/input/detection-results'
@@ -473,41 +487,45 @@ def DetectionInference(detector, data_loader, dataset, idx_to_class, thresh=0.8,
       shutil.rmtree(gt_dir)
     os.mkdir(gt_dir)
 
-  for iter_num, data_batch in enumerate(data_loader):
-    images, boxes, w_batch, h_batch, img_ids = data_batch
-    images = images.to(dtype=dtype, device=device)
+  detector.eval()
+  with torch.no_grad():
+    start_t = time.time()
 
-    final_proposals, final_conf_scores, final_class = detector.inference(images, thresh=thresh, nms_thresh=nms_thresh)
+    for iter_num, data_batch in enumerate(data_loader):
+      images, boxes, w_batch, h_batch, img_ids = data_batch
+      images = images.to(dtype=dtype, device=device)
 
-    # clamp on the proposal coordinates
-    batch_size = len(images)
-    for idx in range(batch_size):
-      torch.clamp_(final_proposals[idx][:, 0::2], min=0, max=w_batch[idx])
-      torch.clamp_(final_proposals[idx][:, 1::2], min=0, max=h_batch[idx])
+      final_proposals, final_conf_scores, final_class = detector.inference(images, thresh=thresh, nms_thresh=nms_thresh)
 
-      # visualization
-      # get the original image
-      # hack to get the original image so we don't have to load from local again...
-      i = batch_size*iter_num + idx
-      img, _ = dataset.__getitem__(i)
+      # clamp on the proposal coordinates
+      batch_size = len(images)
+      for idx in range(batch_size):
+        torch.clamp_(final_proposals[idx][:, 0::2], min=0, max=w_batch[idx])
+        torch.clamp_(final_proposals[idx][:, 1::2], min=0, max=h_batch[idx])
 
-      valid_box = sum([1 if j != -1 else 0 for j in boxes[idx][:, 0]])
-      final_all = torch.cat((final_proposals[idx], \
-        final_class[idx].float(), final_conf_scores[idx]), dim=-1).cpu()
-      resized_proposals = coord_trans(final_all, w_batch[idx], h_batch[idx])
+        # visualization
+        # get the original image
+        # hack to get the original image so we don't have to load from local again...
+        i = batch_size*iter_num + idx
+        img, _ = dataset.__getitem__(i)
 
-      # write results to file for evaluation (use mAP API https://github.com/Cartucho/mAP for now...)
-      if output_dir is not None:
-        file_name = img_ids[idx].replace('.jpg', '.txt')
-        with open(os.path.join(det_dir, file_name), 'w') as f_det, \
-          open(os.path.join(gt_dir, file_name), 'w') as f_gt:
-          print('{}: {} GT bboxes and {} proposals'.format(img_ids[idx], valid_box, resized_proposals.shape[0]))
-          for b in boxes[idx][:valid_box]:
-            f_gt.write('{} {:.2f} {:.2f} {:.2f} {:.2f}\n'.format(idx_to_class[b[4].item()], b[0], b[1], b[2], b[3]))
-          for b in resized_proposals:
-            f_det.write('{} {:.6f} {:.2f} {:.2f} {:.2f} {:.2f}\n'.format(idx_to_class[b[4].item()], b[5], b[0], b[1], b[2], b[3]))
-      else:
-        eecs598.vis.detection_visualizer(img, idx_to_class, boxes[idx][:valid_box], resized_proposals)
+        valid_box = sum([1 if j != -1 else 0 for j in boxes[idx][:, 0]])
+        final_all = torch.cat((final_proposals[idx], \
+          final_class[idx].float(), final_conf_scores[idx]), dim=-1).cpu()
+        resized_proposals = coord_trans(final_all, w_batch[idx], h_batch[idx])
 
-  end_t = time.time()
-  print('Total inference time: {:.1f}s'.format(end_t-start_t))
+        # write results to file for evaluation (use mAP API https://github.com/Cartucho/mAP for now...)
+        if output_dir is not None:
+          file_name = img_ids[idx].replace('.jpg', '.txt')
+          with open(os.path.join(det_dir, file_name), 'w') as f_det, \
+            open(os.path.join(gt_dir, file_name), 'w') as f_gt:
+            print('{}: {} GT bboxes and {} proposals'.format(img_ids[idx], valid_box, resized_proposals.shape[0]))
+            for b in boxes[idx][:valid_box]:
+              f_gt.write('{} {:.2f} {:.2f} {:.2f} {:.2f}\n'.format(idx_to_class[b[4].item()], b[0], b[1], b[2], b[3]))
+            for b in resized_proposals:
+              f_det.write('{} {:.6f} {:.2f} {:.2f} {:.2f} {:.2f}\n'.format(idx_to_class[b[4].item()], b[5], b[0], b[1], b[2], b[3]))
+        else:
+          eecs598.vis.detection_visualizer(img, idx_to_class, boxes[idx][:valid_box], resized_proposals)
+
+    end_t = time.time()
+    print('Total inference time: {:.1f}s'.format(end_t-start_t))

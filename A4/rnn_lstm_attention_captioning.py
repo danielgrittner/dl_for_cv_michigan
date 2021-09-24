@@ -828,14 +828,6 @@ class CaptioningRNN(nn.Module):
         #############################################################################
         #                              END OF YOUR CODE                             #
         #############################################################################
-
-    def __apply_feature_projection_to_attention_lstm(self, image_features):
-        # TODO: this can be simplified ==> dimension reduction is not necessary! 
-        N, D, D_a, _ = image_features.size()
-        temp = image_features.reshape(N, D, -1).permute(0, 2, 1) # (N x 16 x D)
-        A = self.feature_projection(temp) # (N x 16 x H)
-        A = A.permute(0, 2, 1).reshape(N, -1, D_a, D_a) # (N x H x 4 x 4)
-        return A
     
     def forward(self, images, captions):
         """
@@ -890,14 +882,7 @@ class CaptioningRNN(nn.Module):
 
         if self.cell_type == 'attention':
           # 2) Create attention mattrix
-          
-          # TODO: Why doesn't this work in Colab?
-          # A = self.__apply_feature_projection_to_attention_lstm(image_features) # (N x H x 4 x 4)
-          # N, D, D_a, _ = image_features.size()
-          # temp = image_features.reshape(N, D, -1).permute(0, 2, 1) # (N x 16 x D)
-          # A = self.feature_projection(temp) # (N x 16 x H)
-          # A = A.permute(0, 2, 1).reshape(N, -1, D_a, D_a) # (N x H x 4 x 4)
-
+          # Permute from (N x H x 4 x 4) to (N x 4 x 4 x H) for the feature projection
           A = self.feature_projection(image_features.permute(0, 2, 3, 1)).permute(0, 3, 1, 2) # (N x H x 4 x 4)
 
           # 3) Apply Attention LSTM
@@ -982,13 +967,7 @@ class CaptioningRNN(nn.Module):
         image_features = self.feature_extractor.extract_mobilenet_feature(images) # (N x D) (pooled) or (N x D x 4 x 4) (D == 1280 here)
 
         if self.cell_type == 'attention':
-          # TODO: Why doesn't this work in Colab?
-          # A = self.__apply_feature_projection_to_attention_lstm(image_features) # (N x H x 4 x 4)
-          # N, D, D_a, _ = image_features.size()
-          # temp = image_features.reshape(N, D, -1).permute(0, 2, 1) # (N x 16 x D)
-          # A = self.feature_projection(temp) # (N x 16 x H)
-          # A = A.permute(0, 2, 1).reshape(N, -1, D_a, D_a) # (N x H x 4 x 4)
-
+          # Permute from (N x H x 4 x 4) to (N x 4 x 4 x H) for the feature projection
           A = self.feature_projection(image_features.permute(0, 2, 3, 1)).permute(0, 3, 1, 2) # (N x H x 4 x 4)
 
           h_t = A.mean(dim=(2, 3)) # (N x H)

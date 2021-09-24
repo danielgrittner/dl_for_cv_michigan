@@ -71,7 +71,7 @@ def gram_matrix(features, normalize=True):
     N, C, H, W = features.size()
 
     features = features.reshape(N, C, -1) # (N, C, H*W)
-    gram = features.matmul(features.permute(0, 2, 1))
+    gram = features.matmul(features.permute(0, 2, 1)) # (N, C, C)
 
     if normalize:
       # Divide by the number of neurons for normalization

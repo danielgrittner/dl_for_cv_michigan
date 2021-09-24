@@ -2,6 +2,7 @@ import time
 import math
 import torch 
 import torch.nn as nn
+import torch.nn.functional as F
 from torch import optim
 import torchvision
 from a5_helper import *
@@ -12,6 +13,7 @@ from single_stage_detector import GenerateAnchor, GenerateProposal, IoU
 def hello_two_stage_detector():
     print("Hello from two_stage_detector.py!")
 
+
 class ProposalModule(nn.Module):
   def __init__(self, in_dim, hidden_dim=256, num_anchors=9, drop_ratio=0.3):
     super().__init__()
@@ -19,16 +21,21 @@ class ProposalModule(nn.Module):
     assert(num_anchors != 0)
     self.num_anchors = num_anchors
     ##############################################################################
-    # TODO: Define the region proposal layer - a sequential module with a 3x3    #
+    # TODO:                                                                      #
+    # Define the region proposal layer - a sequential module with a 3x3          #
     # conv layer, followed by a Dropout (p=drop_ratio), a Leaky ReLU and         #
     # a 1x1 conv.                                                                #
     # HINT: The output should be of shape Bx(Ax6)x7x7, where A=self.num_anchors. #
     #       Determine the padding of the 3x3 conv layer given the output dim.    #
     ##############################################################################
-    # Make sure that your region proposal module is called pred_layer
-    self.pred_layer = None      
-    # Replace "pass" statement with your code
-    pass
+
+    self.pred_layer = nn.Sequential(
+      nn.Conv2d(in_dim, hidden_dim, kernel_size=3, padding=1),
+      nn.Dropout(p=drop_ratio),
+      nn.LeakyReLU(),
+      nn.Conv2d(hidden_dim, 6 * self.num_anchors, kernel_size=1)
+    )
+
     ##############################################################################
     #                               END OF YOUR CODE                             #
     ##############################################################################
@@ -87,10 +94,12 @@ class ProposalModule(nn.Module):
     - offsets: Tensor of shape (B, A, 4, H', W') giving the predicted transforms
       for all anchors
     """
+
     if pos_anchor_coord is None or pos_anchor_idx is None or neg_anchor_idx is None:
       mode = 'eval'
     else:
       mode = 'train'
+
     conf_scores, offsets, proposals = None, None, None
     ############################################################################
     # TODO: Predict classification scores (object vs background) and transforms#
@@ -104,8 +113,29 @@ class ProposalModule(nn.Module):
     # HINT: You can compute proposal coordinates using the GenerateProposal    #
     # function from the previous notebook.                                     #
     ############################################################################
-    # Replace "pass" statement with your code
-    pass
+
+    B, _, H_prime, W_prime = features.size()
+    
+    prediction = self.pred_layer(features) # (B, 6 * A, H', W')
+    prediction = prediction.reshape(B, self.num_anchors, 6, H_prime, W_prime) # (B, A, 6, H', W')
+
+    conf_scores = prediction[:, :, :2, :, :] # (B, A, 2, H', W')
+    offsets = prediction[:, :, 2:, :, :] # (B, A, 4, H', W')
+
+    if mode == 'train':
+      conf_scores = torch.cat((self._extract_anchor_data(conf_scores, pos_anchor_idx), self._extract_anchor_data(conf_scores, neg_anchor_idx)), dim=0) # (2M, 2)
+      offsets = self._extract_anchor_data(offsets, pos_anchor_idx) # (M, 4)
+
+      # Change temporarily the shape of the following tensors
+      pos_anchor_coord = pos_anchor_coord.unsqueeze(0).unsqueeze(0).unsqueeze(0) # (1, 1, 1, M, 4)
+      offsets = offsets.unsqueeze(0).unsqueeze(0).unsqueeze(0) # (1, 1, 1, M, 4)
+      
+      proposals = GenerateProposal(pos_anchor_coord, offsets, method='FasterRCNN').reshape(-1, 4) # (M, 4)
+
+      # Shape back
+      pos_anchor_coord = pos_anchor_coord.reshape(-1, 4) # (M, 4)
+      offsets = offsets.reshape(-1, 4) # (M, 4)
+    
     ##############################################################################
     #                               END OF YOUR CODE                             #
     ##############################################################################
@@ -153,11 +183,11 @@ def BboxRegression(offsets, GT_offsets, batch_size):
 
 
 class RPN(nn.Module):
-  def __init__(self):
+  def __init__(self, device='cuda'):
     super().__init__()
 
     # READ ONLY
-    self.anchor_list = torch.tensor([[1., 1], [2, 2], [3, 3], [4, 4], [5, 5], [2, 3], [3, 2], [3, 5], [5, 3]])
+    self.anchor_list = torch.tensor([[1., 1], [2, 2], [3, 3], [4, 4], [5, 5], [2, 3], [3, 2], [3, 5], [5, 3]], device=device)
     self.feat_extractor = FeatureExtractor()
     self.prop_module = ProposalModule(1280, num_anchors=self.anchor_list.shape[0])
 
@@ -169,8 +199,11 @@ class RPN(nn.Module):
     - images: Tensor of shape (B, 3, 224, 224) giving input images
     - bboxes: Tensor of ground-truth bounding boxes, returned from the DataLoader
     - output_mode: One of 'loss' or 'all' that determines what is returned:
+      LOSS:
       If output_mode is 'loss' then the output is:
       - total_loss: Torch scalar giving the total RPN loss for the minibatch
+
+      ALL:
       If output_mode is 'all' then the output is:
       - total_loss: Torch scalar giving the total RPN loss for the minibatch
       - pos_conf_scores: Tensor of shape (M, 1) giving the object classification
@@ -217,17 +250,42 @@ class RPN(nn.Module):
     # HINT: Do not apply thresholding nor NMS on the proposals during training   #
     #       as positive/negative anchors have been explicitly targeted.          #
     ##############################################################################
-    # Replace "pass" statement with your code
-    pass
+    
+    # Image feature extraction
+    features = self.feat_extractor(images) # (B, 1280, H', W')
+
+    # Grid and anchor generation
+    B = features.size()[0]
+
+    grid = GenerateGrid(B, device=images.device) # (B, H', W', 2)
+    anchors = GenerateAnchor(self.anchor_list, grid) # (B, A, H', W', 4)
+
+    # Compute IoU between anchors and GT boxes
+    iou_mat = IoU(anchors, bboxes) # (B, A*H'*W', N)
+
+    anc_per_img = iou_mat.size()[1]
+
+    # Determine activated/negative anchors, and GT_conf_scores, GT_offsets, GT_class
+    pos_anchor_idx, neg_ancor_idx, _, GT_offsets, GT_class, activated_anc_coord, _ =  \
+        ReferenceOnActivatedAnchors(anchors, bboxes, grid, iou_mat)
+
+    # Compute conf_scores, offsets, and proposals through the proposal module
+    conf_scores, offsets, proposals = self.prop_module(features, pos_anchor_coord=activated_anc_coord, 
+            pos_anchor_idx=pos_anchor_idx, neg_anchor_idx=neg_ancor_idx) # (2M, 2), (M, 4), (M, 4)
+
+    # Compute the total loss
+    conf_loss = ConfScoreRegression(conf_scores, B)
+    reg_loss = BboxRegression(offsets, GT_offsets, B)
+
+    total_loss  = w_conf * conf_loss + w_reg * reg_loss
+    
     ##############################################################################
     #                               END OF YOUR CODE                             #
     ##############################################################################
-
     if output_mode == 'loss':
       return total_loss
     else:
       return total_loss, conf_scores, proposals, features, GT_class, pos_anchor_idx, anc_per_img
-
 
   def inference(self, images, thresh=0.5, nms_thresh=0.7, mode='RPN'):
     """
@@ -261,7 +319,7 @@ class RPN(nn.Module):
     """
     assert mode in ('RPN', 'FasterRCNN'), 'invalid inference mode!'
 
-    features, final_conf_probs, final_proposals = None, None, None
+    features, final_conf_probs, final_proposals = None, [], []
     ##############################################################################
     # TODO: Predicting the RPN proposal coordinates `final_proposals` and        #
     # confidence scores `final_conf_probs`.                                     #
@@ -271,8 +329,58 @@ class RPN(nn.Module):
     # Then, apply NMS to the filtered proposals given the threshold `nms_thresh`.#
     # HINT: Use `torch.no_grad` as context to speed up the computation.          #
     ##############################################################################
-    # Replace "pass" statement with your code
-    pass
+    
+    with torch.no_grad():
+      # Image feature extraction
+      features = self.feat_extractor(images) # (B, 1280, H', W')
+
+      # Grid and anchor generation
+      B = features.size()[0]
+      
+      grid = GenerateGrid(B, device=images.device) # (B, H', W', 2)
+      anchors = GenerateAnchor(self.anchor_list, grid) # (B, A, H', W', 4)
+
+      A = anchors.size()[1]
+
+      # Predict the conf_scores and offsets using the proposal module
+      conf_scores, offsets = self.prop_module(features) # (B, A, 2, H', W'), (B, A, 4, H', W')
+
+      # Squash the conf_scores between 0 and 1
+      conf_prob = torch.sigmoid(conf_scores[:, :, 0, :, :]) # (B, A, H', W')
+
+      # Generate proposals
+      proposals = GenerateProposal(anchors, offsets.permute(0, 1, 3, 4, 2)) # (B, A, H', W', 4)
+      
+      # N := A*H'*W'
+      proposals = proposals.reshape(B, -1, 4) # (B, N, 4)
+      conf_prob = conf_prob.reshape(B, -1) # (B, N)
+
+      B = images.size()[0]
+      for sample_idx in range(B):
+        sample_proposals = proposals[sample_idx] # (N, 4)
+        sample_conf_prob = conf_prob[sample_idx] # (N)
+
+        # Filter P(object) > thresh
+        mask = torch.nonzero(sample_conf_prob > thresh).view(-1) # (N)
+
+        if len(mask) == 0:
+          final_proposals.append(torch.empty((0, 4), device=images.device))
+          final_conf_probs.append(torch.empty((0, 1), device=images.device))
+          continue
+
+        sample_proposals = sample_proposals[mask]
+        sample_conf_prob = sample_conf_prob[mask]
+
+        # Apply NNMS on the filtered proposals
+        kept_idxs = torchvision.ops.nms(sample_proposals, sample_conf_prob, iou_threshold=nms_thresh)
+
+        final_sample_proposals = sample_proposals[kept_idxs]
+        final_sample_conf_prob = sample_conf_prob[kept_idxs]
+
+        # Append to the final output
+        final_proposals.append(final_sample_proposals)
+        final_conf_probs.append(final_sample_conf_prob.unsqueeze(1))
+    
     ##############################################################################
     #                               END OF YOUR CODE                             #
     ##############################################################################
@@ -283,7 +391,7 @@ class RPN(nn.Module):
 
 class TwoStageDetector(nn.Module):
   def __init__(self, in_dim=1280, hidden_dim=256, num_classes=20, \
-               roi_output_w=2, roi_output_h=2, drop_ratio=0.3):
+               roi_output_w=2, roi_output_h=2, drop_ratio=0.3, device='cuda'):
     super().__init__()
 
     assert(num_classes != 0)
@@ -297,12 +405,15 @@ class TwoStageDetector(nn.Module):
     # HINT: The dimension of the two Linear layers are in_dim -> hidden_dim and  #
     # hidden_dim -> num_classes.                                                 #
     ##############################################################################
-    # Your RPN and classification layers should be named as follows
-    self.rpn = None
-    self.cls_layer = None
 
-    # Replace "pass" statement with your code
-    pass
+    self.rpn = RPN(device=device)
+    self.cls_layer = nn.Sequential(
+      nn.Linear(in_dim, hidden_dim),
+      nn.Dropout(p=drop_ratio), 
+      nn.ReLU(), 
+      nn.Linear(hidden_dim, num_classes)
+    )
+
     ##############################################################################
     #                               END OF YOUR CODE                             #
     ##############################################################################
@@ -335,8 +446,34 @@ class TwoStageDetector(nn.Module):
     # v) Compute the total_loss which is formulated as:                          #
     #    total_loss = rpn_loss + cls_loss.                                       #
     ##############################################################################
-    # Replace "pass" statement with your code
-    pass
+    
+    # Use RPN for image feature extraction, grid/anchor/proposal generation, and activated
+    # as well as negative anchors determination
+    rpn_loss, conf_scores, proposals, features, GT_class, pos_anchor_idx, anc_per_img = \
+          self.rpn(images, bboxes, output_mode='all') # (1), (2M, 2), (M, 4), (B, in_dim, H', W'), (M), (M,), (M,), (1)
+
+    # Perform RoI Align on proposals
+    M = proposals.size()[0]
+    boxes = torch.empty((M, 5), device=images.device)
+    # From the documentation: If a single Tensor is passed, then the first column should 
+    # contain the index of the corresponding element in the batch, i.e. a number in [0, N - 1]
+    boxes[:, 0] = (pos_anchor_idx // anc_per_img) # For each entry, it tells us to which image of the batch it corresponds to
+    boxes[:, 1:5] = proposals
+
+    roi_features = torchvision.ops.roi_align(features, boxes, (self.roi_output_h, self.roi_output_w)) # (M, in_dim, H_roi, W_roi)
+
+    # Perform meanpool on the RoI features in the spatial dimension
+    roi_pooled = roi_features.mean(dim=(2, 3)) # (M, in_dim)
+
+    # Pass the RoI feature through the region classification layer for computing
+    cls_prob = self.cls_layer(roi_pooled) # (M, C)
+
+    # Compute the cross entropy loss between the prediction class_prob and the reference GT_class
+    cls_loss = F.cross_entropy(cls_prob, GT_class, reduction='sum') * 1. / images.size()[0]
+
+    # Compute the total loss
+    total_loss = rpn_loss + cls_loss
+
     ##############################################################################
     #                               END OF YOUR CODE                             #
     ##############################################################################
@@ -366,7 +503,7 @@ class TwoStageDetector(nn.Module):
       of shape (P_i,) giving the predicted category labels for each box in
       final_proposals[i].
     """
-    final_proposals, final_conf_probs, final_class = None, None, None
+    final_proposals, final_conf_probs, final_class = None, None, []
     ##############################################################################
     # TODO: Predicting the final proposal coordinates `final_proposals`,        #
     # confidence scores `final_conf_probs`, and the class index `final_class`.  #
@@ -375,9 +512,24 @@ class TwoStageDetector(nn.Module):
     # HINT: Use the RPN inference function to perform thresholding and NMS, and #
     # to compute final_proposals and final_conf_probs. Use the predicted class  #
     # probabilities from the second-stage network to compute final_class.       #
-    ##############################################################################
-    # Replace "pass" statement with your code
-    pass
+    #############################################################################
+    
+    final_proposals, final_conf_probs, features = self.rpn.inference(images, thresh=thresh, nms_thresh=nms_thresh, mode='FasterRCNN') # B x (P_i, 4), B x (P_i), (B, D, H', W')
+
+    # Boxes (i.e. final_proposals) are accepted as List[Tensor[L, 4]] --> B * (P_i, 4)
+    roi_features = torchvision.ops.roi_align(features, final_proposals, (self.roi_output_h, self.roi_output_w)) # (N, D, H_roi, W_roi) where N := B * P_i
+    roi_pooled = roi_features.mean(dim=(2, 3)) # (N, D)
+
+    class_probs = self.cls_layer(roi_pooled) # (N, C)
+    class_pred = torch.argmax(class_probs, dim=-1).unsqueeze(-1) # (N, 1)
+
+    num_of_proposals = []
+    for proposals_per_img in final_proposals:
+      num_of_proposals_per_img = proposals_per_img.size()[0]
+      num_of_proposals.append(num_of_proposals_per_img)
+
+    final_class = class_pred.split(num_of_proposals, dim=0)
+
     ##############################################################################
     #                               END OF YOUR CODE                             #
     ##############################################################################
