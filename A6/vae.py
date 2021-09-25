@@ -15,12 +15,54 @@ def hello_vae():
     print("Hello from vae.py!")
 
 
+def reparametrize(mu, logvar):
+    """
+    Differentiably sample random Gaussian data with specified mean and variance using the
+    reparameterization trick.
+
+    Suppose we want to sample a random number z from a Gaussian distribution with mean mu and
+    standard deviation sigma, such that we can backpropagate from the z back to mu and sigma.
+    We can achieve this by first sampling a random value epsilon from a standard Gaussian
+    distribution with zero mean and unit variance, then setting z = sigma * epsilon + mu.
+
+    For more stable training when integrating this function into a neural network, it helps to
+    pass this function the log of the variance of the distribution from which to sample, rather
+    than specifying the standard deviation directly.
+
+    Inputs:
+    - mu: Tensor of shape (N, Z) giving means
+    - logvar: Tensor of shape (N, Z) giving log-variances
+
+    Returns: 
+    - z: Estimated latent vectors, where z[i, j] is a random value sampled from a Gaussian with
+         mean mu[i, j] and log-variance logvar[i, j].
+    """
+    z = None
+    ################################################################################################
+    # TODO: Reparametrize by initializing epsilon as a normal distribution and scaling by          #
+    # posterior mu and sigma to estimate z                                                         #
+    ################################################################################################
+
+    # Sample from unit Gaussian distribution N(0, 1)
+    epsilon = torch.randn_like(mu) # (N, Z)
+    sigma = torch.exp(logvar * 0.5) # (N, Z)
+    z = sigma * epsilon + mu # (N, Z)
+    
+    ################################################################################################
+    #                              END OF YOUR CODE                                                #
+    ################################################################################################
+    return z
+
+
 class VAE(nn.Module):
-    def __init__(self, input_size, latent_size=15):
+    def __init__(self, input_size, latent_size=15, hidden_dim=512, C=1, H=28, W=28):
         super(VAE, self).__init__()
         self.input_size = input_size # H*W
+        assert self.input_size == C * H * W
         self.latent_size = latent_size # Z
-        self.hidden_dim = None # H_d
+        self.hidden_dim = hidden_dim # H_d
+        
+        # Layers
         self.encoder = None
         self.mu_layer = None
         self.logvar_layer = None
@@ -34,19 +76,44 @@ class VAE(nn.Module):
         # features into estimates of the mean and log-variance of the posterior over the latent    #
         # vectors; the mean and log-variance estimates will both be tensors of shape (N, Z).       #
         ############################################################################################
-        # Replace "pass" statement with your code
-        pass
+        
+        self.encoder = nn.Sequential(
+            nn.Flatten(), 
+            nn.Linear(self.input_size, self.hidden_dim),
+            nn.ReLU(),
+            nn.Linear(self.hidden_dim, self.hidden_dim),
+            nn.ReLU(),
+            nn.Linear(self.hidden_dim, self.hidden_dim),
+            nn.ReLU()
+        )
+
+        # Layer for predicting the posterior mu
+        self.mu_layer = nn.Linear(self.hidden_dim, self.latent_size)
+
+        # Layer for predicting the posterior log-variance
+        self.logvar_layer = nn.Linear(self.hidden_dim, self.latent_size)
+
         ############################################################################################
         # TODO: Implement the fully-connected decoder architecture described in the notebook.      #
         # Specifically, self.decoder should be a network that inputs a batch of latent vectors of  #
         # shape (N, Z) and outputs a tensor of estimated images of shape (N, 1, H, W).             #
         ############################################################################################
-        # Replace "pass" statement with your code
-        pass
+        
+        self.decoder = nn.Sequential(
+            nn.Linear(self.latent_size, self.hidden_dim),
+            nn.ReLU(),
+            nn.Linear(self.hidden_dim, self.hidden_dim),
+            nn.ReLU(),
+            nn.Linear(self.hidden_dim, self.hidden_dim),
+            nn.ReLU(),
+            nn.Linear(self.hidden_dim, self.input_size),
+            nn.Sigmoid(),
+            nn.Unflatten(1, (C, H, W))
+        )
+        
         ############################################################################################
         #                                      END OF YOUR CODE                                    #
         ############################################################################################
-
 
     def forward(self, x):
         """
@@ -70,8 +137,18 @@ class VAE(nn.Module):
         # (2) Reparametrize to compute  the latent vector z                                        #
         # (3) Pass z through the decoder to resconstruct x                                         #
         ############################################################################################
-        # Replace "pass" statement with your code
-        pass
+        
+        # Pass the input batch through the encoder model to get posterior mu and posterior logvariance
+        intermediate = self.encoder(x) # (N, H)
+        mu = self.mu_layer(intermediate) # (N, Z)
+        logvar = self.logvar_layer(intermediate) # (N, Z)
+        
+        # Reparametrize to compute the latent vector z
+        z = reparametrize(mu, logvar) # (N, Z)
+
+        # Reconstruct x by passing z through the decoder
+        x_hat = self.decoder(z) # (N, 1, H, W)
+        
         ############################################################################################
         #                                      END OF YOUR CODE                                    #
         ############################################################################################
@@ -79,12 +156,15 @@ class VAE(nn.Module):
 
 
 class CVAE(nn.Module):
-    def __init__(self, input_size, num_classes=10, latent_size=15):
+    def __init__(self, input_size, num_classes=10, latent_size=15, hidden_dim=512, C=1, H=28, W=28):
         super(CVAE, self).__init__()
         self.input_size = input_size # H*W
+        assert self.input_size == C * H * W
         self.latent_size = latent_size # Z
         self.num_classes = num_classes # C
-        self.hidden_dim = None # H_d
+        self.hidden_dim = hidden_dim # H_d
+        
+        # Layers
         self.encoder = None
         self.mu_layer = None
         self.logvar_layer = None
@@ -96,15 +176,36 @@ class CVAE(nn.Module):
         # (N, H_d) feature space, and a final two layers that project that feature space           #
         # to posterior mu and posterior log-variance estimates of the latent space (N, Z)          #
         ############################################################################################
-        # Replace "pass" statement with your code
-        pass
+        
+        self.encoder = nn.Sequential(
+            nn.Linear(self.input_size + self.num_classes, self.hidden_dim),
+            nn.ReLU(),
+            nn.Linear(self.hidden_dim, self.hidden_dim),
+            nn.ReLU(),
+            nn.Linear(self.hidden_dim, self.hidden_dim),
+            nn.ReLU()
+        )
+
+        self.mu_layer = nn.Linear(self.hidden_dim, self.latent_size)
+        self.logvar_layer = nn.Linear(self.hidden_dim, self.latent_size)
 
         ############################################################################################
         # TODO: Define a fully-connected decoder as described in the notebook that transforms the  #
         # latent space (N, Z + C) to the estimated images of shape (N, 1, H, W).                   #
         ############################################################################################
-        # Replace "pass" statement with your code
-        pass
+        
+        self.decoder = nn.Sequential(
+            nn.Linear(self.latent_size + self.num_classes, self.hidden_dim),
+            nn.ReLU(),
+            nn.Linear(self.hidden_dim, self.hidden_dim),
+            nn.ReLU(),
+            nn.Linear(self.hidden_dim, self.hidden_dim),
+            nn.ReLU(),
+            nn.Linear(self.hidden_dim, self.input_size),
+            nn.Sigmoid(),
+            nn.Unflatten(1, (C, H, W))
+        )
+        
         ############################################################################################
         #                                      END OF YOUR CODE                                    #
         ############################################################################################
@@ -133,48 +234,21 @@ class CVAE(nn.Module):
         # (2) Reparametrize to compute the latent vector z                                         #
         # (3) Pass concatenation of z and one hot vectors through the decoder to resconstruct x    #
         ############################################################################################
-        # Replace "pass" statement with your code
-        pass
+        
+        N = x.size()[0]
+        
+        x_and_labels = torch.cat((x.reshape(N, -1), c), dim=-1) # (N, H*W + C)
+        intermediate = self.encoder(x_and_labels)
+        mu = self.mu_layer(intermediate)
+        logvar = self.logvar_layer(intermediate)
+        z = reparametrize(mu, logvar)
+        z_and_labels = torch.cat((z, c), dim=-1)
+        x_hat = self.decoder(z_and_labels)
+        
         ############################################################################################
         #                                      END OF YOUR CODE                                    #
         ############################################################################################
         return x_hat, mu, logvar
-
-
-
-def reparametrize(mu, logvar):
-    """
-    Differentiably sample random Gaussian data with specified mean and variance using the
-    reparameterization trick.
-
-    Suppose we want to sample a random number z from a Gaussian distribution with mean mu and
-    standard deviation sigma, such that we can backpropagate from the z back to mu and sigma.
-    We can achieve this by first sampling a random value epsilon from a standard Gaussian
-    distribution with zero mean and unit variance, then setting z = sigma * epsilon + mu.
-
-    For more stable training when integrating this function into a neural network, it helps to
-    pass this function the log of the variance of the distribution from which to sample, rather
-    than specifying the standard deviation directly.
-
-    Inputs:
-    - mu: Tensor of shape (N, Z) giving means
-    - logvar: Tensor of shape (N, Z) giving log-variances
-
-    Returns: 
-    - z: Estimated latent vectors, where z[i, j] is a random value sampled from a Gaussian with
-         mean mu[i, j] and log-variance logvar[i, j].
-    """
-    z = None
-    ################################################################################################
-    # TODO: Reparametrize by initializing epsilon as a normal distribution and scaling by          #
-    # posterior mu and sigma to estimate z                                                         #
-    ################################################################################################
-    # Replace "pass" statement with your code
-    pass
-    ################################################################################################
-    #                              END OF YOUR CODE                                                #
-    ################################################################################################
-    return z
 
 
 def loss_function(x_hat, x, mu, logvar):
@@ -194,10 +268,13 @@ def loss_function(x_hat, x, mu, logvar):
     ################################################################################################
     # TODO: Compute negative variational lowerbound loss as described in the notebook              #
     ################################################################################################
-    # Replace "pass" statement with your code
-    pass
+
+    data_reconstruction_loss = nn.functional.binary_cross_entropy(x_hat, x, reduction='sum')
+    kl_divergence_loss = -0.5 * (1 + logvar - mu * mu - torch.exp(logvar)).sum()
+    loss = data_reconstruction_loss + kl_divergence_loss
+    loss /= x_hat.size()[0]
+    
     ################################################################################################
     #                            END OF YOUR CODE                                                  #
     ################################################################################################
     return loss
-

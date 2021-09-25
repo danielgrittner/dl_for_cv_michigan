@@ -15,6 +15,7 @@ from torch import nn
 def hello_helper():
     print("Hello from a6_helper.py!")
 
+
 def show_images(images):
     images = torch.reshape(images, [images.shape[0], -1])  # images reshape to (batch_size, D)
     sqrtn = int(math.ceil(math.sqrt(images.shape[0])))
@@ -33,13 +34,17 @@ def show_images(images):
         plt.imshow(img.reshape([sqrtimg,sqrtimg]))
     return 
 
+
 def count_params(model):
     """Count the number of parameters in the model"""
     param_count = sum([p.numel() for p in model.parameters()])
     return param_count
 
+
 def initialize_weights(m):
-  """ Initializes the weights of a torch.nn model using xavier initialization"""
+  """
+  Initializes the weights of a torch.nn model using xavier initialization
+  """
   if isinstance(m, nn.Linear) or isinstance(m, nn.ConvTranspose2d):
     nn.init.xavier_uniform_(m.weight.data)
 
@@ -61,6 +66,7 @@ def one_hot(labels, class_size):
     for i, label in enumerate(labels):
         targets[i, label] = 1
     return targets
+
 
 def train_vae(epoch, model, train_loader, cond=False):
     """
@@ -92,6 +98,3 @@ def train_vae(epoch, model, train_loader, cond=False):
         optimizer.step()
     print('Train Epoch: {} \tLoss: {:.6f}'.format(
         epoch, loss.data))
-
-
-
